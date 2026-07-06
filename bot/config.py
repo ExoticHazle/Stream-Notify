@@ -23,6 +23,8 @@ TICKET_TWITCH_ROLE_ID = int(os.environ.get("TICKET_TWITCH_ROLE_ID", "15235893754
 
 # Salons spéciaux
 IMAGES_ONLY_CHANNEL_ID = int(os.environ.get("IMAGES_ONLY_CHANNEL_ID", "1523490263392190474"))
+# ID utilisateur protégé contre les pings (le bot intercepte et resend sans ping)
+PROTECTED_FROM_PING_ID = int(os.environ.get("PROTECTED_FROM_PING_ID", "692776158701420657"))
 
 # Logs
 LOG_MESSAGES_CHANNEL_ID = int(os.environ.get("LOG_MESSAGES_CHANNEL_ID", "1523589795568291992"))

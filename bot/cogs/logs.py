@@ -1,10 +1,12 @@
 import discord
 from discord.ext import commands
 from datetime import datetime
+import re
 from bot.config import (
     LOG_MESSAGES_CHANNEL_ID,
     LOG_MEMBRES_CHANNEL_ID,
     IMAGES_ONLY_CHANNEL_ID,
+    PROTECTED_FROM_PING_ID,
 )
 
 
@@ -12,9 +14,27 @@ def is_bot_or_system(user) -> bool:
     return user.bot if user else True
 
 
+PING_PATTERN = re.compile(rf"<@!?{PROTECTED_FROM_PING_ID}>")
+
+
 class Logs(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._webhook_cache: dict[int, discord.Webhook] = {}  # channel_id → webhook
+
+    async def _get_webhook(self, channel: discord.TextChannel) -> discord.Webhook | None:
+        """Retourne le webhook du bot pour ce salon, en crée un si besoin."""
+        if channel.id in self._webhook_cache:
+            return self._webhook_cache[channel.id]
+        try:
+            hooks = await channel.webhooks()
+            wh = discord.utils.get(hooks, user=self.bot.user)
+            if not wh:
+                wh = await channel.create_webhook(name=self.bot.user.display_name)
+            self._webhook_cache[channel.id] = wh
+            return wh
+        except discord.HTTPException:
+            return None
 
     # ─── Utilitaire ──────────────────────────────────────────────────────────
 
@@ -22,7 +42,7 @@ class Logs(commands.Cog):
         ch = guild.get_channel(channel_id)
         return ch
 
-    # ─── Salon images uniquement ─────────────────────────────────────────────
+    # ─── on_message : images-only + protection ping ───────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -30,19 +50,66 @@ class Logs(commands.Cog):
             return
         if not message.guild:
             return
-        if message.channel.id != IMAGES_ONLY_CHANNEL_ID:
+
+        # ── 1. Salon images uniquement ────────────────────────────────────────
+        if message.channel.id == IMAGES_ONLY_CHANNEL_ID:
+            has_image = any(
+                att.content_type and att.content_type.startswith("image/")
+                for att in message.attachments
+            )
+            if not has_image:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+            return  # pas besoin de vérifier le ping dans ce salon
+
+        # ── 2. Protection anti-ping ───────────────────────────────────────────
+        if not PING_PATTERN.search(message.content):
             return
 
-        # Vérifie qu'au moins une pièce jointe est une image
-        has_image = any(
-            att.content_type and att.content_type.startswith("image/")
-            for att in message.attachments
-        )
-        if not has_image:
+        # Remplacer la mention par le nom affiché (sans ping)
+        try:
+            target = message.guild.get_member(PROTECTED_FROM_PING_ID) or \
+                     await message.guild.fetch_member(PROTECTED_FROM_PING_ID)
+            display = f"@{target.display_name}"
+        except discord.HTTPException:
+            display = f"@user"
+
+        clean_content = PING_PATTERN.sub(display, message.content)
+
+        # Récupérer les fichiers attachés avant de supprimer
+        files = []
+        for att in message.attachments:
             try:
-                await message.delete()
+                files.append(await att.to_file())
             except discord.HTTPException:
                 pass
+
+        # Supprimer le message original (le ping est envoyé ici — on doit agir vite)
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            return  # Si on ne peut pas supprimer, on n'envoie pas de doublon
+
+        # Resend via webhook en usurpant l'identité de l'auteur (nom + avatar)
+        wh = await self._get_webhook(message.channel)
+        if wh:
+            await wh.send(
+                content=clean_content or None,
+                username=message.author.display_name,
+                avatar_url=message.author.display_avatar.url,
+                files=files,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        else:
+            # Fallback : le bot renvoie le message en précisant l'auteur
+            author_tag = message.author.mention
+            await message.channel.send(
+                f"{author_tag} : {clean_content}",
+                files=files,
+                allowed_mentions=discord.AllowedMentions(users=[message.author]),
+            )
 
     # ─── Messages édités ─────────────────────────────────────────────────────
 
