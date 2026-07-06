@@ -263,6 +263,21 @@ class TicketCloseView(ui.View):
 
         await close_ticket_db(interaction.channel.id)
 
+        # Renommer le salon en closed-(username)-####
+        safe_name = (
+            ticket["user_name"]
+            .split("#")[0]          # retirer le discriminant #1234 si présent
+            .lower()
+            .replace(" ", "-")
+        )
+        # Garder seulement les caractères autorisés par Discord dans les noms de salon
+        safe_name = "".join(c for c in safe_name if c.isalnum() or c == "-") or "user"
+        new_channel_name = f"closed-{safe_name}-{ticket['id']:04d}"
+        try:
+            await interaction.channel.edit(name=new_channel_name)
+        except discord.HTTPException:
+            pass  # Pas bloquant si le renommage échoue
+
         # Retirer les permissions d'écriture du créateur
         ticket_user = interaction.guild.get_member(ticket["user_id"])
         if ticket_user:
