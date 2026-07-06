@@ -50,23 +50,33 @@ class TwitchNotifier(commands.Cog):
             return None
 
         url = "https://api.twitch.tv/helix/streams"
-        headers = {
-            "Client-ID": TWITCH_CLIENT_ID,
-            "Authorization": f"Bearer {self.access_token}",
-        }
         params = {"user_login": TWITCH_USERNAME}
 
-        try:
+        async def _do_request(token: str):
+            headers = {
+                "Client-ID": TWITCH_CLIENT_ID,
+                "Authorization": f"Bearer {token}",
+            }
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params) as resp:
-                    if resp.status == 401:
-                        # Token expiré, renouveler
-                        self.access_token = await self.get_access_token()
-                        return None
-                    if resp.status == 200:
-                        data = await resp.json()
-                        streams = data.get("data", [])
-                        return streams[0] if streams else None
+                    return resp.status, await resp.json()
+
+        try:
+            status, data = await _do_request(self.access_token)
+
+            if status == 401:
+                # Token expiré : renouveler et réessayer dans le même cycle
+                print("[Twitch] Token expiré, renouvellement en cours…")
+                self.access_token = await self.get_access_token()
+                if not self.access_token:
+                    return None
+                status, data = await _do_request(self.access_token)
+
+            if status == 200:
+                streams = data.get("data", [])
+                return streams[0] if streams else None
+
+            print(f"[Twitch] Réponse inattendue de l'API : HTTP {status}")
         except Exception as e:
             print(f"[Twitch] Erreur lors de la vérification du stream : {e}")
         return None
@@ -95,18 +105,25 @@ class TwitchNotifier(commands.Cog):
     async def check_live(self):
         """Boucle qui vérifie toutes les X secondes si le streamer est en live."""
         await self.bot.wait_until_ready()
+        try:
+            stream = await self.fetch_stream_data()
 
-        stream = await self.fetch_stream_data()
-        currently_live = stream is not None
+            # Si fetch a échoué (erreur réseau, token invalide…), on ne change pas l'état
+            if stream is None and not self.is_live:
+                return
 
-        if currently_live and not self.is_live:
-            # Passage de offline → live : envoyer la notification
-            self.is_live = True
-            await self.send_live_notification(stream)
-        elif not currently_live and self.is_live:
-            # Passage de live → offline
-            self.is_live = False
-            print(f"[Twitch] {TWITCH_USERNAME} n'est plus en live.")
+            currently_live = stream is not None
+
+            if currently_live and not self.is_live:
+                # Passage de offline → live : envoyer la notification
+                self.is_live = True
+                await self.send_live_notification(stream)
+            elif not currently_live and self.is_live:
+                # Passage de live → offline
+                self.is_live = False
+                print(f"[Twitch] {TWITCH_USERNAME} n'est plus en live.")
+        except Exception as e:
+            print(f"[Twitch] Erreur inattendue dans la boucle de vérification : {e}")
 
     @check_live.before_loop
     async def before_check_live(self):

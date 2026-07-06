@@ -1,45 +1,76 @@
-# [Project name]
+# Bot Discord — exotichazle
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Bot Discord en Python pour le serveur d'exotichazle, avec intégration Twitch et outils de modération complets.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `python3 -m bot.main` — lancer le bot (workflow "Discord Bot")
+- Le bot se relance automatiquement via le workflow Replit
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11 + discord.py 2.x
+- aiosqlite — base de données SQLite asynchrone (sanctions)
+- aiohttp — appels API Twitch
 
-## Where things live
+## Où sont les fichiers
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot/main.py` — point d'entrée, setup du bot et commande `!help`
+- `bot/config.py` — variables de configuration (lues depuis les secrets/env)
+- `bot/database.py` — fonctions CRUD pour la BDD SQLite des sanctions
+- `bot/cogs/moderation.py` — commandes de modération (ban, kick, timeout, warn, history, delsanction)
+- `bot/cogs/twitch.py` — notification de live Twitch (polling toutes les 60s)
+- `bot/cogs/planning.py` — commandes de planning de stream (owner only)
+- `bot/sanctions.db` — base SQLite créée automatiquement au premier lancement
+
+## Variables d'environnement
+
+Secrets (configurés dans Replit Secrets) :
+- `DISCORD_TOKEN` — token du bot Discord
+- `TWITCH_CLIENT_ID` — Client ID de l'app Twitch
+- `TWITCH_CLIENT_SECRET` — Client Secret de l'app Twitch
+
+Env vars partagées :
+- `TWITCH_USERNAME=exotichazle`
+- `LIVE_CHANNEL_ID=1523496553623588935`
+- `PLANNING_CHANNEL_ID=1523501712306995262`
+- `MOD_ROLE_NAME=Modérateur`
+
+## Commandes du bot
+
+Préfixe : `!`
+
+### Modération (rôle Modérateur requis)
+| Commande | Description |
+|---|---|
+| `!ban @membre [raison]` | Bannit + DM + enregistre |
+| `!unban <id>` | Débannit par ID utilisateur |
+| `!kick @membre [raison]` | Expulse + DM + enregistre |
+| `!timeout @membre <minutes> [raison]` | Timeout + DM + enregistre |
+| `!untimeout @membre` | Lève un timeout |
+| `!warn @membre [raison]` | Avertit + DM + enregistre |
+| `!history [@membre]` | Historique des sanctions |
+| `!delsanction <id>` | Supprime sanction + lève ban/timeout si applicable |
+
+### Planning (owner only)
+| Commande | Description |
+|---|---|
+| `!planning [# Titre] Contenu...` | Envoie un planning dans le salon dédié |
+| `!clearplanning [n]` | Supprime les n derniers messages du salon planning |
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
+- **Polling Twitch** : vérification toutes les 60s via Helix API (pas d'EventSub, ne nécessite pas de serveur public)
+- **SQLite** : stockage simple des sanctions sans dépendance externe
+- **is_owner()** : les commandes planning utilisent la vérification native discord.py (propriétaire de l'application)
+- **delsanction** : lève automatiquement le ban/timeout Discord en plus de désactiver la sanction en BDD
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+_À remplir au fil des sessions._
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Activer **Server Members Intent** et **Message Content Intent** dans le portail développeur Discord
+- Le bot doit avoir les permissions : Ban Members, Kick Members, Moderate Members, Read/Send Messages, Manage Messages
+- Changer `TWITCH_CHECK_INTERVAL` dans `config.py` pour modifier la fréquence de vérification du live

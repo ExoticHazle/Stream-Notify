@@ -64,12 +64,12 @@ class Moderation(commands.Cog):
         if member.top_role >= ctx.author.top_role and not await self.bot.is_owner(ctx.author):
             return await ctx.send("❌ Tu ne peux pas bannir quelqu'un avec un rôle supérieur ou égal au tien.")
 
+        await member.ban(reason=reason)
         sanction_id = await db.add_sanction(
             member.id, str(member), ctx.guild.id,
             ctx.author.id, str(ctx.author), "ban", reason
         )
         await send_sanction_dm(member, "ban", reason, ctx.guild.name, sanction_id)
-        await member.ban(reason=f"[#{sanction_id}] {reason}")
 
         embed = discord.Embed(
             title="🔨 Membre banni",
@@ -112,12 +112,12 @@ class Moderation(commands.Cog):
         if member.top_role >= ctx.author.top_role and not await self.bot.is_owner(ctx.author):
             return await ctx.send("❌ Tu ne peux pas kick quelqu'un avec un rôle supérieur ou égal au tien.")
 
+        await member.kick(reason=reason)
         sanction_id = await db.add_sanction(
             member.id, str(member), ctx.guild.id,
             ctx.author.id, str(ctx.author), "kick", reason
         )
         await send_sanction_dm(member, "kick", reason, ctx.guild.name, sanction_id)
-        await member.kick(reason=f"[#{sanction_id}] {reason}")
 
         embed = discord.Embed(
             title="👢 Membre expulsé",
@@ -144,13 +144,13 @@ class Moderation(commands.Cog):
         if duration < 1 or duration > 40320:
             return await ctx.send("❌ La durée doit être entre 1 et 40320 minutes (28 jours).")
 
+        until = discord.utils.utcnow() + timedelta(minutes=duration)
+        await member.timeout(until, reason=reason)
         sanction_id = await db.add_sanction(
             member.id, str(member), ctx.guild.id,
             ctx.author.id, str(ctx.author), "timeout", reason, duration
         )
         await send_sanction_dm(member, "timeout", reason, ctx.guild.name, sanction_id, duration)
-        until = discord.utils.utcnow() + timedelta(minutes=duration)
-        await member.timeout(until, reason=f"[#{sanction_id}] {reason}")
 
         embed = discord.Embed(
             title="⏱️ Membre en timeout",
@@ -245,31 +245,48 @@ class Moderation(commands.Cog):
         if not sanction["active"]:
             return await ctx.send(f"⚠️ La sanction #{sanction_id} est déjà inactive.")
 
-        await db.deactivate_sanction(sanction_id, ctx.guild.id)
-
         label = TYPE_LABELS.get(sanction["type"], sanction["type"])
         lifted_msg = ""
+        reversal_ok = True
 
-        # Lever le ban si applicable
+        # Tenter de lever la sanction Discord AVANT de désactiver en BDD
         if sanction["type"] == "ban":
             try:
                 user = await self.bot.fetch_user(sanction["user_id"])
                 await ctx.guild.unban(user, reason=f"Sanction #{sanction_id} supprimée par {ctx.author}")
                 lifted_msg = "\n✅ **Le bannissement a été levé automatiquement.**"
-            except (discord.NotFound, discord.HTTPException):
-                lifted_msg = "\n⚠️ Impossible de lever le ban (déjà levé ou utilisateur introuvable)."
+            except discord.NotFound:
+                lifted_msg = "\n⚠️ L'utilisateur n'était plus banni (déjà levé)."
+            except discord.HTTPException as e:
+                lifted_msg = f"\n⚠️ Impossible de lever le ban : {e}"
+                reversal_ok = False
 
-        # Lever le timeout si applicable
         elif sanction["type"] == "timeout":
             try:
+                # Essayer d'abord depuis le cache, sinon fetch
                 member = ctx.guild.get_member(sanction["user_id"])
-                if member and member.is_timed_out():
+                if member is None:
+                    try:
+                        member = await ctx.guild.fetch_member(sanction["user_id"])
+                    except discord.NotFound:
+                        member = None
+
+                if member is not None and member.is_timed_out():
                     await member.timeout(None, reason=f"Sanction #{sanction_id} supprimée par {ctx.author}")
                     lifted_msg = "\n✅ **Le timeout a été levé automatiquement.**"
+                elif member is None:
+                    lifted_msg = "\n⚠️ Membre introuvable sur le serveur (peut avoir quitté)."
                 else:
-                    lifted_msg = "\n⚠️ Le timeout était déjà expiré ou le membre est introuvable."
-            except discord.HTTPException:
-                lifted_msg = "\n⚠️ Impossible de lever le timeout."
+                    lifted_msg = "\n⚠️ Le timeout était déjà expiré."
+            except discord.HTTPException as e:
+                lifted_msg = f"\n⚠️ Impossible de lever le timeout : {e}"
+                reversal_ok = False
+
+        # Désactiver en BDD seulement si la levée a réussi (ou si c'était déjà levé)
+        if reversal_ok:
+            await db.deactivate_sanction(sanction_id, ctx.guild.id)
+        else:
+            lifted_msg += "\n❌ **La sanction reste active en base de données** car la levée Discord a échoué."
 
         embed = discord.Embed(
             title=f"🗑️ Sanction #{sanction_id} supprimée",
