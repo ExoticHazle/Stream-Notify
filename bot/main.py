@@ -7,7 +7,9 @@ from bot.config import DISCORD_TOKEN, PREFIX
 from bot import database
 from bot.cogs.tickets import TicketPanelView, TicketCloseView
 from bot.cogs.voiceprivate import VoiceControlPanel
+from bot.web import start_web
 
+start_web()
 
 COGS = [
     "bot.cogs.moderation",
