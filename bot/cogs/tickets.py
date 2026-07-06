@@ -9,6 +9,7 @@ from bot.config import (
     TICKET_DISCORD_ROLE_ID,
     TICKET_TWITCH_ROLE_ID,
     TICKET_PANEL_CHANNEL_ID,
+    TICKET_CATEGORY_ID,
     LOG_TICKETS_CHANNEL_ID,
     MOD_ROLE_NAME,
 )
@@ -175,9 +176,7 @@ class TicketTypeView(ui.View):
             )
 
         # Chercher/créer la catégorie Tickets
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if not category:
-            category = await guild.create_category("Tickets")
+        category = guild.get_channel(TICKET_CATEGORY_ID)
 
         ticket_num = await get_ticket_count(guild.id) + 1
         channel_name = f"ticket-{user.name.lower().replace(' ', '-')}-{ticket_num:04d}"
