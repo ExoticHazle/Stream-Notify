@@ -1,8 +1,43 @@
 import discord
 from discord.ext import commands
-from datetime import timedelta
+from datetime import timedelta, datetime
 import bot.database as db
-from bot.config import MOD_ROLE_NAME
+from bot.config import MOD_ROLE_NAME, LOG_SANCTIONS_CHANNEL_ID
+
+
+async def send_sanction_log(guild: discord.Guild, sanction_type: str, member, moderator, reason: str, sanction_id: int, duration: int = None, lifted: bool = False):
+    """Envoie un log dans le salon des sanctions."""
+    log_ch = guild.get_channel(LOG_SANCTIONS_CHANNEL_ID)
+    if not log_ch:
+        return
+    colors = {
+        "ban": discord.Color.red(), "kick": discord.Color.orange(),
+        "timeout": discord.Color.gold(), "warn": discord.Color.yellow(),
+        "unban": discord.Color.green(), "untimeout": discord.Color.green(),
+        "delsanction": discord.Color.green(),
+    }
+    labels = {
+        "ban": "🔨 Bannissement", "kick": "👢 Expulsion", "timeout": "⏱️ Timeout",
+        "warn": "⚠️ Avertissement", "unban": "✅ Déban", "untimeout": "✅ Timeout levé",
+        "delsanction": "🗑️ Sanction supprimée",
+    }
+    embed = discord.Embed(
+        title=labels.get(sanction_type, sanction_type),
+        color=colors.get(sanction_type, discord.Color.greyple()),
+        timestamp=datetime.utcnow(),
+    )
+    if hasattr(member, "mention"):
+        embed.add_field(name="Membre", value=f"{member.mention} (`{member}`)", inline=True)
+    else:
+        embed.add_field(name="Membre", value=str(member), inline=True)
+    embed.add_field(name="Modérateur", value=moderator.mention, inline=True)
+    embed.add_field(name="Raison", value=reason or "Aucune", inline=False)
+    if duration:
+        embed.add_field(name="Durée", value=f"{duration} minute(s)", inline=True)
+    embed.add_field(name="ID Sanction", value=f"#{sanction_id}", inline=True)
+    if hasattr(member, "display_avatar"):
+        embed.set_thumbnail(url=member.display_avatar.url)
+    await log_ch.send(embed=embed)
 
 
 def has_mod_role():
@@ -70,6 +105,7 @@ class Moderation(commands.Cog):
             ctx.author.id, str(ctx.author), "ban", reason
         )
         await send_sanction_dm(member, "ban", reason, ctx.guild.name, sanction_id)
+        await send_sanction_log(ctx.guild, "ban", member, ctx.author, reason, sanction_id)
 
         embed = discord.Embed(
             title="🔨 Membre banni",
@@ -90,6 +126,7 @@ class Moderation(commands.Cog):
         try:
             user = await self.bot.fetch_user(user_id)
             await ctx.guild.unban(user, reason=reason)
+            await send_sanction_log(ctx.guild, "unban", user, ctx.author, reason, 0)
             embed = discord.Embed(
                 title="✅ Membre débanni",
                 color=discord.Color.green(),
@@ -118,6 +155,7 @@ class Moderation(commands.Cog):
             ctx.author.id, str(ctx.author), "kick", reason
         )
         await send_sanction_dm(member, "kick", reason, ctx.guild.name, sanction_id)
+        await send_sanction_log(ctx.guild, "kick", member, ctx.author, reason, sanction_id)
 
         embed = discord.Embed(
             title="👢 Membre expulsé",
@@ -151,6 +189,7 @@ class Moderation(commands.Cog):
             ctx.author.id, str(ctx.author), "timeout", reason, duration
         )
         await send_sanction_dm(member, "timeout", reason, ctx.guild.name, sanction_id, duration)
+        await send_sanction_log(ctx.guild, "timeout", member, ctx.author, reason, sanction_id, duration)
 
         embed = discord.Embed(
             title="⏱️ Membre en timeout",
@@ -170,6 +209,7 @@ class Moderation(commands.Cog):
     async def untimeout(self, ctx, member: discord.Member, *, reason: str = "Levée manuelle"):
         """Retire le timeout d'un membre."""
         await member.timeout(None, reason=reason)
+        await send_sanction_log(ctx.guild, "untimeout", member, ctx.author, reason, 0)
         await ctx.send(f"✅ Le timeout de **{member}** a été levé.")
 
     # ─── WARN ───────────────────────────────────────────────────────────────
@@ -186,6 +226,7 @@ class Moderation(commands.Cog):
             ctx.author.id, str(ctx.author), "warn", reason
         )
         await send_sanction_dm(member, "warn", reason, ctx.guild.name, sanction_id)
+        await send_sanction_log(ctx.guild, "warn", member, ctx.author, reason, sanction_id)
 
         embed = discord.Embed(
             title="⚠️ Avertissement",
@@ -285,6 +326,7 @@ class Moderation(commands.Cog):
         # Désactiver en BDD seulement si la levée a réussi (ou si c'était déjà levé)
         if reversal_ok:
             await db.deactivate_sanction(sanction_id, ctx.guild.id)
+            await send_sanction_log(ctx.guild, "delsanction", sanction["user_name"], ctx.author, sanction["reason"] or "Aucune", sanction_id)
         else:
             lifted_msg += "\n❌ **La sanction reste active en base de données** car la levée Discord a échoué."
 

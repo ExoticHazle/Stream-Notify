@@ -21,6 +21,19 @@ async def init_db():
                 active INTEGER NOT NULL DEFAULT 1
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at TEXT
+            )
+        """)
         await db.commit()
 
 
