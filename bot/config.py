@@ -2,7 +2,7 @@ import os
 
 # Discord
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
-PREFIX = "!"
+PREFIX = "<<"
 MOD_ROLE_NAME = os.environ.get("MOD_ROLE_NAME", "Modérateur")
 
 # Channels
