@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from datetime import timedelta, datetime
 import bot.database as db
-from bot.config import MOD_ROLE_NAME, LOG_SANCTIONS_CHANNEL_ID
+from bot.config import MOD_ROLE_NAME, LOG_SANCTIONS_CHANNEL_ID, LOG_MESSAGES_CHANNEL_ID
 
 
 async def send_sanction_log(guild: discord.Guild, sanction_type: str, member, moderator, reason: str, sanction_id: int, duration: int = None, lifted: bool = False):
@@ -239,6 +239,72 @@ class Moderation(commands.Cog):
         embed.set_thumbnail(url=member.display_avatar.url)
         await ctx.send(embed=embed)
 
+    # ─── PURGE ──────────────────────────────────────────────────────────────
+
+    @commands.command(name="purge", aliases=["clear", "nettoyer"])
+    @has_mod_role()
+    @commands.bot_has_permissions(manage_messages=True)
+    async def purge(self, ctx, amount: int, member: discord.Member = None):
+        """Supprime des messages dans le salon. Filtre optionnel par membre.
+        Usage : <<purge <nombre> [@membre]"""
+        if amount < 1 or amount > 1000:
+            return await ctx.send(
+                "❌ Le nombre de messages doit être compris entre **1** et **1000**.",
+                delete_after=5,
+            )
+
+        await ctx.message.delete()
+
+        if member:
+            # Compte les suppressions pour respecter la limite demandée
+            count = 0
+            scan_limit = min(amount * 10, 2000)
+
+            def member_check(msg):
+                nonlocal count
+                if msg.author == member and not msg.pinned and count < amount:
+                    count += 1
+                    return True
+                return False
+
+            deleted = await ctx.channel.purge(
+                limit=scan_limit,
+                check=member_check,
+                bulk=True,
+                reason=f"Purge par {ctx.author} — messages de {member}",
+            )
+        else:
+            deleted = await ctx.channel.purge(
+                limit=amount,
+                check=lambda m: not m.pinned,
+                bulk=True,
+                reason=f"Purge par {ctx.author}",
+            )
+
+        n = len(deleted)
+
+        # ── Confirmation éphémère ──────────────────────────────────────────
+        if member:
+            msg = f"✅ **{n}** message(s) de **{member}** supprimé(s) dans {ctx.channel.mention}."
+        else:
+            msg = f"✅ **{n}** message(s) supprimé(s) dans {ctx.channel.mention}."
+        await ctx.send(msg, delete_after=6)
+
+        # ── Log dans le salon messages ─────────────────────────────────────
+        log_ch = ctx.guild.get_channel(LOG_MESSAGES_CHANNEL_ID)
+        if log_ch:
+            embed = discord.Embed(
+                title="🗑️ Purge de messages",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow(),
+            )
+            embed.add_field(name="Salon", value=ctx.channel.mention, inline=True)
+            embed.add_field(name="Modérateur", value=ctx.author.mention, inline=True)
+            embed.add_field(name="Messages supprimés", value=str(n), inline=True)
+            if member:
+                embed.add_field(name="Filtré sur", value=f"{member.mention} (`{member}`)", inline=True)
+            await log_ch.send(embed=embed)
+
     # ─── HISTORIQUE ─────────────────────────────────────────────────────────
 
     @commands.command(name="history", aliases=["historique", "sanctions"])
@@ -349,6 +415,7 @@ class Moderation(commands.Cog):
     @kick.error
     @timeout.error
     @warn.error
+    @purge.error
     @history.error
     @delsanction.error
     async def mod_error(self, ctx, error):
