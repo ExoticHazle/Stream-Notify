@@ -6,6 +6,7 @@ from discord.ext import commands
 from bot.config import DISCORD_TOKEN, PREFIX
 from bot import database
 from bot.cogs.tickets import TicketPanelView, TicketCloseView
+from bot.cogs.voiceprivate import VoiceControlPanel
 
 
 COGS = [
@@ -14,6 +15,7 @@ COGS = [
     "bot.cogs.planning",
     "bot.cogs.tickets",
     "bot.cogs.logs",
+    "bot.cogs.voiceprivate",
 ]
 
 
@@ -37,6 +39,7 @@ class DiscordBot(commands.Bot):
         # Enregistrer les vues persistantes AVANT de charger les cogs
         self.add_view(TicketPanelView())
         self.add_view(TicketCloseView())
+        self.add_view(VoiceControlPanel())
 
         for cog in COGS:
             try:
