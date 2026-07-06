@@ -4,6 +4,7 @@ from datetime import datetime
 from bot.config import (
     LOG_MESSAGES_CHANNEL_ID,
     LOG_MEMBRES_CHANNEL_ID,
+    IMAGES_ONLY_CHANNEL_ID,
 )
 
 
@@ -20,6 +21,28 @@ class Logs(commands.Cog):
     async def get_log_channel(self, guild: discord.Guild, channel_id: int):
         ch = guild.get_channel(channel_id)
         return ch
+
+    # ─── Salon images uniquement ─────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+        if message.channel.id != IMAGES_ONLY_CHANNEL_ID:
+            return
+
+        # Vérifie qu'au moins une pièce jointe est une image
+        has_image = any(
+            att.content_type and att.content_type.startswith("image/")
+            for att in message.attachments
+        )
+        if not has_image:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
 
     # ─── Messages édités ─────────────────────────────────────────────────────
 
