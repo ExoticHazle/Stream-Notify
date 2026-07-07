@@ -9,25 +9,6 @@ from bot.config import VOICE_CREATE_CHANNEL_ID
 
 # ─── Utilitaires ─────────────────────────────────────────────────────────────
 
-async def resolve_member(guild: discord.Guild, value: str) -> discord.Member | None:
-    """Résout un membre depuis une mention, un ID ou un nom affiché."""
-    value = value.strip()
-    if value.startswith("<@") and value.endswith(">"):
-        value = value[2:-1].lstrip("!")
-    if value.isdigit():
-        m = guild.get_member(int(value))
-        if not m:
-            try:
-                m = await guild.fetch_member(int(value))
-            except discord.HTTPException:
-                pass
-        return m
-    return discord.utils.find(
-        lambda m: m.display_name.lower() == value.lower() or m.name.lower() == value.lower(),
-        guild.members,
-    )
-
-
 async def build_panel_embed(channel_id: int, guild: discord.Guild) -> discord.Embed:
     info = await db.get_private_voice(channel_id)
     if not info:
@@ -72,7 +53,6 @@ async def build_panel_embed(channel_id: int, guild: discord.Guild) -> discord.Em
 
 
 async def refresh_panel(channel: discord.VoiceChannel, channel_id: int):
-    """Édite le message du panneau de contrôle existant."""
     info = await db.get_private_voice(channel_id)
     if not info or not info.get("panel_message_id"):
         return
@@ -84,57 +64,237 @@ async def refresh_panel(channel: discord.VoiceChannel, channel_id: int):
         pass
 
 
-# ─── Modal membre ─────────────────────────────────────────────────────────────
+async def get_or_create_waiting_channel(
+    guild: discord.Guild, private_channel: discord.VoiceChannel, cog: "VoicePrivate"
+) -> discord.VoiceChannel | None:
+    """Retourne le salon d'attente existant ou en crée un nouveau."""
+    ch_id = private_channel.id
+    # Vérifier dans le cache cog
+    wait_id = cog._waiting_channels.get(ch_id)
+    if wait_id:
+        wc = guild.get_channel(wait_id)
+        if wc:
+            return wc
 
-class MemberModal(ui.Modal):
-    member_input: ui.TextInput = ui.TextInput(
-        label="Mention, ID ou nom du membre",
-        placeholder="@pseudo ou 123456789...",
-        required=True,
+    # Chercher dans la catégorie
+    wait_name = f"⏳ {private_channel.name}"
+    wc = discord.utils.get(guild.voice_channels, name=wait_name, category=private_channel.category)
+    if not wc:
+        try:
+            wc = await guild.create_voice_channel(
+                name=wait_name, category=private_channel.category, reason="Salle d'attente"
+            )
+        except discord.HTTPException:
+            return None
+
+    cog._waiting_channels[ch_id] = wc.id
+    return wc
+
+
+async def delete_waiting_channel(
+    guild: discord.Guild, channel_id: int, cog: "VoicePrivate"
+):
+    """Supprime la salle d'attente et déconnecte ses membres."""
+    wait_id = cog._waiting_channels.pop(channel_id, None)
+    if wait_id:
+        wc = guild.get_channel(wait_id)
+        if wc:
+            for m in list(wc.members):
+                try:
+                    await m.move_to(None)
+                except discord.HTTPException:
+                    pass
+            try:
+                await wc.delete(reason="Mode attente désactivé")
+            except discord.HTTPException:
+                pass
+
+
+# ─── Vues de sélection (éphémères, non persistantes) ─────────────────────────
+
+class AddWhitelistView(ui.View):
+    """Sélection de membres/rôles à ajouter à la whitelist."""
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+
+    @ui.select(
+        cls=ui.MentionableSelect,
+        placeholder="Rôles et membres de la whitelist",
+        min_values=0,
+        max_values=25,
+        row=0,
     )
+    async def select(self, interaction: discord.Interaction, select: ui.MentionableSelect):
+        added = 0
+        for item in select.values:
+            if isinstance(item, discord.Member):
+                await db.add_voice_whitelist(self.channel_id, item.id)
+                added += 1
+            elif isinstance(item, discord.Role):
+                for m in item.members:
+                    if not m.bot:
+                        await db.add_voice_whitelist(self.channel_id, m.id)
+                        added += 1
 
-    def __init__(self, title: str, action: str):
-        super().__init__(title=title)
-        self.action = action
-
-    async def on_submit(self, interaction: discord.Interaction):
-        channel_id = interaction.channel.id
-        member = await resolve_member(interaction.guild, self.member_input.value)
-        if not member:
-            return await interaction.response.send_message("❌ Membre introuvable.", ephemeral=True)
-
-        if self.action == "wl_add":
-            await db.add_voice_whitelist(channel_id, member.id)
-            msg = f"✅ **{member.display_name}** ajouté à la whitelist."
-        elif self.action == "wl_rm":
-            await db.rm_voice_whitelist(channel_id, member.id)
-            msg = f"❌ **{member.display_name}** retiré de la whitelist."
-        elif self.action == "bl_add":
-            await db.add_voice_blacklist(channel_id, member.id)
-            vc = interaction.guild.get_channel(channel_id)
-            if vc and member in vc.members:
-                await member.move_to(None)
-            msg = f"🚫 **{member.display_name}** ajouté à la blacklist."
-        elif self.action == "bl_rm":
-            await db.rm_voice_blacklist(channel_id, member.id)
-            msg = f"🔓 **{member.display_name}** retiré de la blacklist."
-        elif self.action == "set_owner":
-            await db.set_voice_owner(channel_id, member.id)
-            msg = f"👑 **{member.display_name}** est maintenant propriétaire du salon."
-        else:
-            msg = "✅ Action effectuée."
-
-        await interaction.response.send_message(msg, ephemeral=True)
-        vc = interaction.guild.get_channel(channel_id)
+        await interaction.response.send_message(
+            f"✅ {added} membre(s) ajouté(s) à la whitelist.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
         if vc:
-            await refresh_panel(vc, channel_id)
+            await refresh_panel(vc, self.channel_id)
+
+    @ui.button(label="Tout le salon", style=discord.ButtonStyle.primary, row=1)
+    async def all_members(self, interaction: discord.Interaction, button: ui.Button):
+        count = 0
+        for m in interaction.guild.members:
+            if not m.bot:
+                await db.add_voice_whitelist(self.channel_id, m.id)
+                count += 1
+        await interaction.response.send_message(
+            f"✅ {count} membre(s) du salon ajouté(s) à la whitelist.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
+
+    @ui.button(label="Remettre à zéro", style=discord.ButtonStyle.danger, row=1)
+    async def reset(self, interaction: discord.Interaction, button: ui.Button):
+        await db.clear_voice_whitelist(self.channel_id)
+        await interaction.response.send_message("🗑️ Whitelist remise à zéro.", ephemeral=True)
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
+
+
+class RemoveWhitelistView(ui.View):
+    """Sélection parmi les membres actuellement dans la whitelist pour les retirer."""
+
+    def __init__(self, channel_id: int, options: list[discord.SelectOption]):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+
+        select = ui.Select(
+            placeholder="Choisir les membres à retirer de la whitelist…",
+            options=options,
+            min_values=0,
+            max_values=len(options),
+            row=0,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        select: ui.Select = self.children[0]
+        for uid_str in select.values:
+            await db.rm_voice_whitelist(self.channel_id, int(uid_str))
+        await interaction.response.send_message(
+            f"❌ {len(select.values)} membre(s) retiré(s) de la whitelist.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
+
+
+class AddBlacklistView(ui.View):
+    """Sélection d'utilisateurs à ajouter à la blacklist."""
+
+    def __init__(self, channel_id: int, private_channel: discord.VoiceChannel):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+        self.private_channel = private_channel
+
+    @ui.select(
+        cls=ui.UserSelect,
+        placeholder="Sélectionne des membres à blacklister…",
+        min_values=0,
+        max_values=25,
+        row=0,
+    )
+    async def select(self, interaction: discord.Interaction, select: ui.UserSelect):
+        count = 0
+        for member in select.values:
+            if not member.bot:
+                await db.add_voice_blacklist(self.channel_id, member.id)
+                # Expulse immédiatement si présent
+                if member in self.private_channel.members:
+                    try:
+                        await member.move_to(None)
+                    except discord.HTTPException:
+                        pass
+                count += 1
+        await interaction.response.send_message(
+            f"🚫 {count} membre(s) ajouté(s) à la blacklist.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
+
+
+class RemoveBlacklistView(ui.View):
+    """Sélection parmi les membres blacklistés pour les retirer."""
+
+    def __init__(self, channel_id: int, options: list[discord.SelectOption]):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+
+        select = ui.Select(
+            placeholder="Choisir les membres à retirer de la blacklist…",
+            options=options,
+            min_values=0,
+            max_values=len(options),
+            row=0,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        select: ui.Select = self.children[0]
+        for uid_str in select.values:
+            await db.rm_voice_blacklist(self.channel_id, int(uid_str))
+        await interaction.response.send_message(
+            f"🔓 {len(select.values)} membre(s) retiré(s) de la blacklist.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
+
+
+class ChangeOwnerView(ui.View):
+    """Sélection du nouveau propriétaire du salon."""
+
+    def __init__(self, channel_id: int):
+        super().__init__(timeout=120)
+        self.channel_id = channel_id
+
+    @ui.select(
+        cls=ui.UserSelect,
+        placeholder="Sélectionne le nouveau propriétaire…",
+        min_values=1,
+        max_values=1,
+        row=0,
+    )
+    async def select(self, interaction: discord.Interaction, select: ui.UserSelect):
+        new_owner: discord.Member = select.values[0]
+        if new_owner.bot:
+            return await interaction.response.send_message(
+                "❌ Tu ne peux pas donner la propriété à un bot.", ephemeral=True
+            )
+        await db.set_voice_owner(self.channel_id, new_owner.id)
+        await interaction.response.send_message(
+            f"👑 **{new_owner.display_name}** est maintenant propriétaire du salon.", ephemeral=True
+        )
+        vc = interaction.guild.get_channel(self.channel_id)
+        if vc:
+            await refresh_panel(vc, self.channel_id)
 
 
 # ─── Panneau de contrôle (persistant) ────────────────────────────────────────
 
 class VoiceControlPanel(ui.View):
     """Vue persistante — un seul enregistrement suffit pour tous les salons.
-    On lit interaction.channel.id pour savoir de quel salon il s'agit."""
+    interaction.channel.id identifie le salon vocal concerné."""
 
     def __init__(self):
         super().__init__(timeout=None)
@@ -155,6 +315,9 @@ class VoiceControlPanel(ui.View):
             return False
         return True
 
+    def _get_cog(self, interaction: discord.Interaction) -> "VoicePrivate | None":
+        return interaction.client.get_cog("VoicePrivate")
+
     # ── Modes ──────────────────────────────────────────────────────────────────
 
     @ui.button(label="🌐 Public", style=discord.ButtonStyle.secondary,
@@ -162,57 +325,118 @@ class VoiceControlPanel(ui.View):
     async def mode_public(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await db.set_voice_mode(interaction.channel.id, "public")
+        ch_id = interaction.channel.id
+        cog = self._get_cog(interaction)
+        if cog:
+            await delete_waiting_channel(interaction.guild, ch_id, cog)
+        await db.set_voice_mode(ch_id, "public")
         await interaction.response.send_message("🌐 Mode **Public** activé.", ephemeral=True)
-        await refresh_panel(interaction.channel, interaction.channel.id)
+        await refresh_panel(interaction.channel, ch_id)
 
     @ui.button(label="🔒 Privé", style=discord.ButtonStyle.secondary,
                custom_id="vpc:mode:private", row=0)
     async def mode_private(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await db.set_voice_mode(interaction.channel.id, "private")
+        ch_id = interaction.channel.id
+        cog = self._get_cog(interaction)
+        if cog:
+            await delete_waiting_channel(interaction.guild, ch_id, cog)
+        await db.set_voice_mode(ch_id, "private")
         await interaction.response.send_message("🔒 Mode **Privé** activé.", ephemeral=True)
-        await refresh_panel(interaction.channel, interaction.channel.id)
+        await refresh_panel(interaction.channel, ch_id)
 
     @ui.button(label="⏳ Avec attente", style=discord.ButtonStyle.secondary,
                custom_id="vpc:mode:waiting", row=0)
     async def mode_waiting(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await db.set_voice_mode(interaction.channel.id, "waiting")
-        await interaction.response.send_message("⏳ Mode **Privé avec attente** activé.", ephemeral=True)
-        await refresh_panel(interaction.channel, interaction.channel.id)
+        ch_id = interaction.channel.id
+        await db.set_voice_mode(ch_id, "waiting")
 
-    # ── Whitelist / Blacklist ──────────────────────────────────────────────────
+        # Créer la salle d'attente immédiatement
+        cog = self._get_cog(interaction)
+        vc = interaction.guild.get_channel(ch_id)
+        if cog and vc:
+            await get_or_create_waiting_channel(interaction.guild, vc, cog)
+
+        await interaction.response.send_message(
+            "⏳ Mode **Privé avec attente** activé. La salle d'attente a été créée.", ephemeral=True
+        )
+        await refresh_panel(interaction.channel, ch_id)
+
+    # ── Whitelist ──────────────────────────────────────────────────────────────
 
     @ui.button(label="✅ Add whitelist", style=discord.ButtonStyle.success,
                custom_id="vpc:wl:add", row=1)
     async def wl_add(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await interaction.response.send_modal(MemberModal("✅ Ajouter à la whitelist", "wl_add"))
+        await interaction.response.send_message(
+            "Sélectionne les membres ou rôles à ajouter à la whitelist :",
+            view=AddWhitelistView(interaction.channel.id),
+            ephemeral=True,
+        )
 
     @ui.button(label="❌ Retirer whitelist", style=discord.ButtonStyle.danger,
                custom_id="vpc:wl:rm", row=1)
     async def wl_rm(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await interaction.response.send_modal(MemberModal("❌ Retirer de la whitelist", "wl_rm"))
+        ch_id = interaction.channel.id
+        wl_ids = await db.get_voice_whitelist(ch_id)
+        if not wl_ids:
+            return await interaction.response.send_message(
+                "ℹ️ La whitelist est déjà vide.", ephemeral=True
+            )
+        options = []
+        for uid in wl_ids[:25]:
+            m = interaction.guild.get_member(uid)
+            label = m.display_name if m else f"User {uid}"
+            options.append(discord.SelectOption(label=label, value=str(uid),
+                                                emoji="✅" if m else None))
+        await interaction.response.send_message(
+            "Sélectionne les membres à retirer de la whitelist :",
+            view=RemoveWhitelistView(ch_id, options),
+            ephemeral=True,
+        )
+
+    # ── Blacklist ──────────────────────────────────────────────────────────────
 
     @ui.button(label="🚫 Add blacklist", style=discord.ButtonStyle.danger,
                custom_id="vpc:bl:add", row=1)
     async def bl_add(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await interaction.response.send_modal(MemberModal("🚫 Ajouter à la blacklist", "bl_add"))
+        vc = interaction.guild.get_channel(interaction.channel.id)
+        await interaction.response.send_message(
+            "Sélectionne les membres à ajouter à la blacklist :",
+            view=AddBlacklistView(interaction.channel.id, vc),
+            ephemeral=True,
+        )
 
     @ui.button(label="🔓 Retirer blacklist", style=discord.ButtonStyle.secondary,
                custom_id="vpc:bl:rm", row=1)
     async def bl_rm(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await interaction.response.send_modal(MemberModal("🔓 Retirer de la blacklist", "bl_rm"))
+        ch_id = interaction.channel.id
+        bl_ids = await db.get_voice_blacklist(ch_id)
+        if not bl_ids:
+            return await interaction.response.send_message(
+                "ℹ️ La blacklist est déjà vide.", ephemeral=True
+            )
+        options = []
+        for uid in bl_ids[:25]:
+            m = interaction.guild.get_member(uid)
+            label = m.display_name if m else f"User {uid}"
+            options.append(discord.SelectOption(label=label, value=str(uid),
+                                                emoji="🚫" if m else None))
+        await interaction.response.send_message(
+            "Sélectionne les membres à retirer de la blacklist :",
+            view=RemoveBlacklistView(ch_id, options),
+            ephemeral=True,
+        )
 
     # ── Owner & Sauvegarde ─────────────────────────────────────────────────────
 
@@ -221,7 +445,11 @@ class VoiceControlPanel(ui.View):
     async def set_owner(self, interaction: discord.Interaction, button: ui.Button):
         if not await self._check_owner(interaction):
             return
-        await interaction.response.send_modal(MemberModal("👑 Changer le propriétaire", "set_owner"))
+        await interaction.response.send_message(
+            "Sélectionne le nouveau propriétaire du salon :",
+            view=ChangeOwnerView(interaction.channel.id),
+            ephemeral=True,
+        )
 
     @ui.button(label="💾 Sauvegarder WL", style=discord.ButtonStyle.secondary,
                custom_id="vpc:save_wl", row=2)
@@ -291,9 +519,17 @@ class WaitingApprovalView(ui.View):
                 "❌ Le salon vocal n'existe plus.", ephemeral=True
             )
 
+        # Marquer l'utilisateur comme "en cours de déplacement" via le cog
+        cog: VoicePrivate | None = interaction.client.get_cog("VoicePrivate")
+        if cog:
+            cog._being_accepted.add(self.waiting_member.id)
+
         in_waiting = self.waiting_member in self.waiting_channel.members
         if in_waiting:
-            await self.waiting_member.move_to(target)
+            try:
+                await self.waiting_member.move_to(target)
+            except discord.HTTPException:
+                pass
             await interaction.response.send_message(
                 f"✅ **{self.waiting_member.display_name}** a été déplacé dans ton salon.",
                 ephemeral=True,
@@ -304,11 +540,16 @@ class WaitingApprovalView(ui.View):
                 ephemeral=True,
             )
 
+        # Retirer le marqueur après un court délai
+        if cog:
+            asyncio.get_event_loop().call_later(
+                3, cog._being_accepted.discard, self.waiting_member.id
+            )
+
         try:
             await interaction.message.delete()
         except discord.HTTPException:
             pass
-        await self._try_delete_waiting()
 
     @ui.button(label="❌ Refuser", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, button: ui.Button):
@@ -321,7 +562,10 @@ class WaitingApprovalView(ui.View):
         self.stop()
 
         if self.waiting_member in self.waiting_channel.members:
-            await self.waiting_member.move_to(None)
+            try:
+                await self.waiting_member.move_to(None)
+            except discord.HTTPException:
+                pass
 
         await interaction.response.send_message(
             f"❌ **{self.waiting_member.display_name}** a été refusé.", ephemeral=True
@@ -330,20 +574,14 @@ class WaitingApprovalView(ui.View):
             await interaction.message.delete()
         except discord.HTTPException:
             pass
-        await self._try_delete_waiting()
 
     async def on_timeout(self):
         if not self.handled:
             if self.waiting_member in self.waiting_channel.members:
-                await self.waiting_member.move_to(None)
-            await self._try_delete_waiting()
-
-    async def _try_delete_waiting(self):
-        if len(self.waiting_channel.members) == 0:
-            try:
-                await self.waiting_channel.delete(reason="Salle d'attente vide")
-            except discord.HTTPException:
-                pass
+                try:
+                    await self.waiting_member.move_to(None)
+                except discord.HTTPException:
+                    pass
 
 
 # ─── Cog ─────────────────────────────────────────────────────────────────────
@@ -351,6 +589,10 @@ class WaitingApprovalView(ui.View):
 class VoicePrivate(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # private_channel_id → waiting_channel_id
+        self._waiting_channels: dict[int, int] = {}
+        # user IDs en cours de déplacement depuis salle d'attente (pour éviter boucle)
+        self._being_accepted: set[int] = set()
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -368,7 +610,8 @@ class VoicePrivate(commands.Cog):
         if after.channel and after.channel.id != VOICE_CREATE_CHANNEL_ID:
             info = await db.get_private_voice(after.channel.id)
             if info:
-                await self._handle_join(member, after.channel, info)
+                from_id = before.channel.id if before.channel else None
+                await self._handle_join(member, after.channel, info, from_id)
 
         # ── Quelqu'un quitte un salon géré ────────────────────────────────────
         if before.channel and before.channel.id != VOICE_CREATE_CHANNEL_ID:
@@ -380,29 +623,39 @@ class VoicePrivate(commands.Cog):
 
     async def _create_channel(self, member: discord.Member, lobby: discord.VoiceChannel):
         guild = member.guild
-        category = lobby.category
-
         safe = "".join(c for c in member.display_name if c.isalnum() or c in " -_").strip() or "user"
         name = f"🔒 {safe}"
 
         try:
-            channel = await guild.create_voice_channel(name=name, category=category)
+            channel = await guild.create_voice_channel(name=name, category=lobby.category)
             await member.move_to(channel)
         except discord.HTTPException:
             return
 
         await db.create_private_voice(channel.id, member.id, guild.id)
-
         embed = await build_panel_embed(channel.id, guild)
         msg = await channel.send(embed=embed, view=VoiceControlPanel())
         await db.set_voice_panel_message(channel.id, msg.id)
 
     # ── Arrivée dans un salon géré ─────────────────────────────────────────────
 
-    async def _handle_join(self, member: discord.Member, channel: discord.VoiceChannel, info: dict):
+    async def _handle_join(
+        self, member: discord.Member, channel: discord.VoiceChannel,
+        info: dict, from_channel_id: int | None
+    ):
         if member.id == info["owner_id"]:
-            return  # Toujours autorisé
+            return
 
+        # Vient de la salle d'attente de CE salon → déjà accepté, on laisse passer
+        wait_ch_id = self._waiting_channels.get(channel.id)
+        if from_channel_id and wait_ch_id and from_channel_id == wait_ch_id:
+            return
+
+        # Marqué comme "en cours d'acceptation" (sécurité supplémentaire)
+        if member.id in self._being_accepted:
+            return
+
+        # Blacklist → déconnexion immédiate
         if await db.is_in_voice_blacklist(channel.id, member.id):
             try:
                 await member.move_to(None)
@@ -411,8 +664,9 @@ class VoicePrivate(commands.Cog):
                 pass
             return
 
+        # Whitelist → toujours autorisé
         if await db.is_in_voice_whitelist(channel.id, member.id):
-            return  # Toujours autorisé
+            return
 
         mode = info["mode"]
 
@@ -435,17 +689,9 @@ class VoicePrivate(commands.Cog):
         self, member: discord.Member, channel: discord.VoiceChannel, info: dict
     ):
         guild = member.guild
-        category = channel.category
-        wait_name = f"⏳ {channel.name}"
-
-        wait_ch = discord.utils.get(guild.voice_channels, name=wait_name, category=category)
+        wait_ch = await get_or_create_waiting_channel(guild, channel, self)
         if not wait_ch:
-            try:
-                wait_ch = await guild.create_voice_channel(
-                    name=wait_name, category=category, reason="Salle d'attente"
-                )
-            except discord.HTTPException:
-                return
+            return
 
         try:
             await member.move_to(wait_ch)
@@ -471,26 +717,17 @@ class VoicePrivate(commands.Cog):
 
     async def _handle_leave(self, channel: discord.VoiceChannel):
         channel_id = channel.id
-        await asyncio.sleep(1)  # Laisser Discord mettre à jour la liste des membres
+        await asyncio.sleep(1)
 
         channel = channel.guild.get_channel(channel_id)
         if channel is None or len(channel.members) == 0:
             if channel:
-                # Supprimer la salle d'attente associée si elle existe
-                wait_name = f"⏳ {channel.name}"
-                wait_ch = discord.utils.get(
-                    channel.guild.voice_channels, name=wait_name, category=channel.category
-                )
-                if wait_ch:
-                    try:
-                        await wait_ch.delete(reason="Salon privé supprimé")
-                    except discord.HTTPException:
-                        pass
+                await delete_waiting_channel(channel.guild, channel_id, self)
                 try:
                     await channel.delete(reason="Salon privé vide")
                 except discord.HTTPException:
                     pass
-
+            self._waiting_channels.pop(channel_id, None)
             await db.delete_private_voice(channel_id)
 
 
