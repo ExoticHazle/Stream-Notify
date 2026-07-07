@@ -118,6 +118,9 @@ async def main():
     async with bot:
         await bot.start(DISCORD_TOKEN)
 
+from artifacts.index import keep_alive
+
+keep_alive()
 
 if __name__ == "__main__":
     asyncio.run(main())
