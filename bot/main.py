@@ -72,7 +72,8 @@ async def main():
     if not DISCORD_TOKEN:
         print("[Bot] ❌ DISCORD_TOKEN manquant. Configure tes secrets.")
         sys.exit(1)
-
+    
+    keep_alive()
     bot = DiscordBot()
 
     @bot.command(name="help", aliases=["aide"])
