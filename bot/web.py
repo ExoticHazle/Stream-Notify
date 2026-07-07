@@ -1,19 +1,16 @@
 from flask import Flask
-import os
 from threading import Thread
+import os
 
 app = Flask(__name__)
 
-@app.get("/")
-def index():
+@app.route("/")
+def home():
     return "Bot is running!"
 
 def run_web():
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        use_reloader=False,
-    )
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-def start_web():
+def keep_alive():
     Thread(target=run_web, daemon=True).start()
