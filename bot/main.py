@@ -7,7 +7,9 @@ from bot.config import DISCORD_TOKEN, PREFIX
 from bot import database
 from bot.cogs.tickets import TicketPanelView, TicketCloseView, TicketActionView
 from bot.cogs.voiceprivate import VoiceControlPanel
+from bot.web import keep_alive
 
+keep_alive()
 COGS = [
     "bot.cogs.moderation",
     "bot.cogs.twitch",
@@ -118,9 +120,7 @@ async def main():
     async with bot:
         await bot.start(DISCORD_TOKEN)
 
-from bot.web import keep_alive
 
-keep_alive()
 
 if __name__ == "__main__":
     asyncio.run(main())
