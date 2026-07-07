@@ -314,9 +314,13 @@ class TicketActionView(ui.View):
     """Actions après fermeture : Transcript ou Suppression."""
 
     def __init__(self):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
 
-    @ui.button(label="📄 Transcript + Supprimer", style=discord.ButtonStyle.primary)
+    @ui.button(
+    label="📄 Transcript + Supprimer",
+    style=discord.ButtonStyle.primary,
+    custom_id="persistent:ticket_transcript"
+)
     async def transcript_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         channel = interaction.channel
@@ -352,7 +356,11 @@ class TicketActionView(ui.View):
         except discord.HTTPException:
             pass
 
-    @ui.button(label="🗑️ Supprimer sans transcript", style=discord.ButtonStyle.danger)
+    @ui.button(
+    label="🗑️ Supprimer sans transcript",
+    style=discord.ButtonStyle.danger,
+    custom_id="persistent:ticket_delete"
+)
     async def delete_btn(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_message("🗑️ Suppression dans 5 secondes…")
         import asyncio
@@ -362,7 +370,11 @@ class TicketActionView(ui.View):
         except discord.HTTPException:
             pass
 
-    @ui.button(label="↩️ Réouvrir", style=discord.ButtonStyle.secondary)
+    @ui.button(
+    label="↩️ Réouvrir",
+    style=discord.ButtonStyle.secondary,
+    custom_id="persistent:ticket_reopen"
+)
     async def reopen_btn(self, interaction: discord.Interaction, button: ui.Button):
         mod_role = discord.utils.get(interaction.guild.roles, name=MOD_ROLE_NAME)
         is_mod = mod_role and mod_role in interaction.user.roles
