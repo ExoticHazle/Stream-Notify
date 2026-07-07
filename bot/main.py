@@ -5,9 +5,8 @@ import discord
 from discord.ext import commands
 from bot.config import DISCORD_TOKEN, PREFIX
 from bot import database
-from bot.cogs.tickets import TicketPanelView, TicketCloseView
-from bot.cogs.voiceprivate import VoiceControlPanel
 from bot.cogs.tickets import TicketPanelView, TicketCloseView, TicketActionView
+from bot.cogs.voiceprivate import VoiceControlPanel
 
 COGS = [
     "bot.cogs.moderation",
