@@ -11,4 +11,5 @@ def home():
 def run_web():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-Thread(target=run_web, daemon=True).start()
+def keep_alive():
+    Thread(target=run_web, daemon=True).start()
