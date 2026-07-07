@@ -595,6 +595,34 @@ class VoicePrivate(commands.Cog):
         self._being_accepted: set[int] = set()
 
     @commands.Cog.listener()
+    async def on_ready(self):
+        """Au démarrage : supprimer les canaux 🔒 orphelins (aucune entrée DB + vides).
+        Les canaux ⏳ (salle d'attente) ne sont PAS dans private_voice — on les ignore."""
+        for guild in self.bot.guilds:
+            for channel in list(guild.voice_channels):
+                # Seuls les canaux privés principaux (🔒) sont concernés
+                if not channel.name.startswith("🔒 "):
+                    continue
+                # Ne pas toucher aux canaux occupés (membres actifs)
+                if len(channel.members) > 0:
+                    continue
+                info = await db.get_private_voice(channel.id)
+                if info:
+                    # Entrée DB valide → récupérer le cache des salles d'attente si elles existent
+                    wait_name = f"⏳ {channel.name}"
+                    wc = discord.utils.get(
+                        guild.voice_channels, name=wait_name, category=channel.category
+                    )
+                    if wc:
+                        self._waiting_channels[channel.id] = wc.id
+                    continue
+                # Canal 🔒 vide sans entrée DB → orphelin confirmé
+                try:
+                    await channel.delete(reason="Nettoyage démarrage : canal privé orphelin vide")
+                except discord.HTTPException:
+                    pass
+
+    @commands.Cog.listener()
     async def on_voice_state_update(
         self,
         member: discord.Member,
@@ -628,11 +656,20 @@ class VoicePrivate(commands.Cog):
 
         try:
             channel = await guild.create_voice_channel(name=name, category=lobby.category)
-            await member.move_to(channel)
         except discord.HTTPException:
             return
 
+        # Enregistrer en DB AVANT de déplacer le membre pour éviter la race condition
+        # (on_voice_state_update se déclenche dès que le membre rejoint le salon)
         await db.create_private_voice(channel.id, member.id, guild.id)
+
+        try:
+            await member.move_to(channel)
+        except discord.HTTPException:
+            await db.delete_private_voice(channel.id)
+            await channel.delete(reason="Déplacement impossible")
+            return
+
         embed = await build_panel_embed(channel.id, guild)
         msg = await channel.send(embed=embed, view=VoiceControlPanel())
         await db.set_voice_panel_message(channel.id, msg.id)
