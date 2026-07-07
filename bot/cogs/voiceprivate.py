@@ -64,6 +64,44 @@ async def refresh_panel(channel: discord.VoiceChannel, channel_id: int):
         pass
 
 
+async def sync_channel_permissions(vc: discord.VoiceChannel, guild: discord.Guild):
+    """Applique les overwrites Discord selon le mode et la whitelist (1 seul appel API)."""
+    info = await db.get_private_voice(vc.id)
+    if not info:
+        return
+
+    mode = info["mode"]
+
+    if mode == "public":
+        # Tout le monde peut rejoindre → supprimer tous les overwrites
+        try:
+            await vc.edit(overwrites={})
+        except discord.HTTPException:
+            pass
+        return
+
+    # Mode privé ou avec attente : construire le dict complet en une fois
+    wl_ids = await db.get_voice_whitelist(vc.id)
+
+    overwrites: dict = {
+        guild.default_role: discord.PermissionOverwrite(connect=False),
+    }
+
+    owner = guild.get_member(info["owner_id"])
+    if owner:
+        overwrites[owner] = discord.PermissionOverwrite(connect=True)
+
+    for uid in wl_ids:
+        m = guild.get_member(uid)
+        if m and m not in overwrites:
+            overwrites[m] = discord.PermissionOverwrite(connect=True)
+
+    try:
+        await vc.edit(overwrites=overwrites)
+    except discord.HTTPException:
+        pass
+
+
 async def get_or_create_waiting_channel(
     guild: discord.Guild, private_channel: discord.VoiceChannel, cog: "VoicePrivate"
 ) -> discord.VoiceChannel | None:
@@ -143,6 +181,7 @@ class AddWhitelistView(ui.View):
         )
         vc = interaction.guild.get_channel(self.channel_id)
         if vc:
+            await sync_channel_permissions(vc, interaction.guild)
             await refresh_panel(vc, self.channel_id)
 
     @ui.button(label="Tout le salon", style=discord.ButtonStyle.primary, row=1)
@@ -157,6 +196,7 @@ class AddWhitelistView(ui.View):
         )
         vc = interaction.guild.get_channel(self.channel_id)
         if vc:
+            await sync_channel_permissions(vc, interaction.guild)
             await refresh_panel(vc, self.channel_id)
 
     @ui.button(label="Remettre à zéro", style=discord.ButtonStyle.danger, row=1)
@@ -165,6 +205,7 @@ class AddWhitelistView(ui.View):
         await interaction.response.send_message("🗑️ Whitelist remise à zéro.", ephemeral=True)
         vc = interaction.guild.get_channel(self.channel_id)
         if vc:
+            await sync_channel_permissions(vc, interaction.guild)
             await refresh_panel(vc, self.channel_id)
 
 
@@ -194,6 +235,7 @@ class RemoveWhitelistView(ui.View):
         )
         vc = interaction.guild.get_channel(self.channel_id)
         if vc:
+            await sync_channel_permissions(vc, interaction.guild)
             await refresh_panel(vc, self.channel_id)
 
 
@@ -287,6 +329,7 @@ class ChangeOwnerView(ui.View):
         )
         vc = interaction.guild.get_channel(self.channel_id)
         if vc:
+            await sync_channel_permissions(vc, interaction.guild)
             await refresh_panel(vc, self.channel_id)
 
 
@@ -330,6 +373,7 @@ class VoiceControlPanel(ui.View):
         if cog:
             await delete_waiting_channel(interaction.guild, ch_id, cog)
         await db.set_voice_mode(ch_id, "public")
+        await sync_channel_permissions(interaction.channel, interaction.guild)
         await interaction.response.send_message("🌐 Mode **Public** activé.", ephemeral=True)
         await refresh_panel(interaction.channel, ch_id)
 
@@ -343,6 +387,7 @@ class VoiceControlPanel(ui.View):
         if cog:
             await delete_waiting_channel(interaction.guild, ch_id, cog)
         await db.set_voice_mode(ch_id, "private")
+        await sync_channel_permissions(interaction.channel, interaction.guild)
         await interaction.response.send_message("🔒 Mode **Privé** activé.", ephemeral=True)
         await refresh_panel(interaction.channel, ch_id)
 
@@ -354,11 +399,14 @@ class VoiceControlPanel(ui.View):
         ch_id = interaction.channel.id
         await db.set_voice_mode(ch_id, "waiting")
 
-        # Créer la salle d'attente immédiatement
         cog = self._get_cog(interaction)
         vc = interaction.guild.get_channel(ch_id)
         if cog and vc:
             await get_or_create_waiting_channel(interaction.guild, vc, cog)
+
+        # Verrouiller les permissions (WL passe directement, les autres → salle d'attente)
+        if vc:
+            await sync_channel_permissions(vc, interaction.guild)
 
         await interaction.response.send_message(
             "⏳ Mode **Privé avec attente** activé. La salle d'attente a été créée.", ephemeral=True
