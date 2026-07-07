@@ -7,6 +7,7 @@ from bot.config import DISCORD_TOKEN, PREFIX
 from bot import database
 from bot.cogs.tickets import TicketPanelView, TicketCloseView
 from bot.cogs.voiceprivate import VoiceControlPanel
+from bot.cogs.tickets import TicketPanelView, TicketCloseView, TicketActionView
 
 COGS = [
     "bot.cogs.moderation",
@@ -39,6 +40,7 @@ class DiscordBot(commands.Bot):
         self.add_view(TicketPanelView())
         self.add_view(TicketCloseView())
         self.add_view(VoiceControlPanel())
+        self.add_view(TicketActionView())
 
         for cog in COGS:
             try:
