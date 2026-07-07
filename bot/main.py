@@ -118,7 +118,7 @@ async def main():
     async with bot:
         await bot.start(DISCORD_TOKEN)
 
-from artifacts.index import keep_alive
+from bot.web import keep_alive
 
 keep_alive()
 
